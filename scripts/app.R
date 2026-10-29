@@ -1,389 +1,287 @@
-# app.R
-options(shiny.fullstacktrace = TRUE)
 library(shiny)
 library(bslib)
+library(bsicons)
 library(tidyverse)
+library(plotly)
 library(randomForest)
 library(lubridate)
-library(bsicons)
 
-# ---- Load model and data --------------------------------------
-rf_model <- readRDS("C:/Users/kvsre/AirQuality/output/rf_model.rds")
-
-pm25_model <- read_csv("C:/Users/kvsre/AirQuality/data/pm25_daily.csv",
-                       show_col_types = FALSE) |>
-  mutate(
-    date = as_date(as.character(date)),
-    city = as.character(city)
-  ) |>
+# ---- Load model and data ---------------------------------------
+rf_model   <- readRDS("C:/Users/kvsre/AirQuality/output/rf_model.rds")
+pm25_model <- read_csv("C:/Users/kvsre/AirQuality/data/pm25_daily.csv", show_col_types = FALSE) |>
+  mutate(date = as_date(as.character(date)), city = as.character(city)) |>
   arrange(city, date)
 
 weekday_levels <- c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
-month_levels   <- month.abb
+city_list      <- sort(unique(pm25_model$city))
+last_obs       <- max(pm25_model$date)
+cutoff         <- last_obs - days(90)
 
-# Model input: weekday must be an ordered factor, as in training
-prep_inputs <- function(df) {
-  df |>
-    mutate(
-      city    = as.character(city),
-      weekday = factor(as.character(weekday), levels = weekday_levels, ordered = TRUE)
-    )
-}
-
-model_input      <- prep_inputs(pm25_model)
+model_input <- pm25_model |>
+  mutate(weekday = factor(as.character(weekday), levels = weekday_levels, ordered = TRUE))
 model_input$pred <- as.numeric(predict(rf_model, newdata = model_input))
-
-cutoff    <- max(pm25_model$date) - days(90)
 test      <- model_input |> filter(date > cutoff)
-city_list <- sort(unique(pm25_model$city))
-last_obs  <- max(pm25_model$date)
 test_rmse <- sqrt(mean((test$pred - test$pm25)^2, na.rm = TRUE))
 
-# ---- Colour palette -------------------------------------------
-accent   <- "#00d4ff"
-accent2  <- "#ff4d6d"
-bg_card  <- "#13132a"
-txt      <- "#e2e8f0"
-txt_dim  <- "#94a3b8"
+# ---- Palette ----------------------------------------------------
+pal <- c(Bengaluru = "#E4572E", Chennai = "#76B041", Delhi = "#17A398",
+         Kolkata = "#2E86AB", Mumbai = "#A23B72")
+ink <- "#1F2933"; muted <- "#5B6770"; paper <- "#FAFAF7"
 
-# ---- ggplot dark theme ----------------------------------------
-dark_plot <- function() {
-  theme_minimal(base_size = 14) +
-    theme(
-      plot.background   = element_rect(fill = bg_card, colour = NA),
-      panel.background  = element_rect(fill = bg_card, colour = NA),
-      panel.grid.major  = element_line(colour = "#1e2a45", linewidth = 0.6),
-      panel.grid.minor  = element_line(colour = "#151f35", linewidth = 0.3),
-      text              = element_text(colour = txt),
-      axis.text         = element_text(colour = txt_dim, size = 12),
-      axis.title        = element_text(colour = txt, size = 13, face = "bold"),
-      plot.title        = element_text(face = "bold", colour = txt, size = 15),
-      plot.subtitle     = element_text(colour = txt_dim, size = 12),
-      plot.caption      = element_text(colour = "#64748b", size = 10),
-      legend.background = element_rect(fill = bg_card, colour = NA),
-      legend.text       = element_text(colour = txt, size = 12),
-      legend.title      = element_text(colour = txt, size = 12, face = "bold"),
-      plot.margin       = ggplot2::margin(16, 16, 16, 16, unit = "pt")
-    )
-}
-
-# ---- Recursive forecast ---------------------------------------
+# ---- Recursive forecast -----------------------------------------
 forecast_city <- function(city_name, n_days) {
   hist      <- pm25_model |> filter(city == city_name) |> arrange(date)
   last_vals <- tail(hist$pm25, 7)
-  out       <- vector("list", n_days)
-  
+  out <- vector("list", n_days)
   for (i in seq_len(n_days)) {
-    next_date <- max(hist$date) + i
+    nd <- last_obs + i
     row <- tibble(
-      city    = city_name,
-      date    = next_date,
-      lag1    = tail(last_vals, 1),
-      roll7   = mean(tail(last_vals, 7)),
-      month   = month(next_date),
-      weekday = factor(weekday_levels[wday(next_date)],
-                       levels = weekday_levels, ordered = TRUE)
+      city = city_name, date = nd,
+      lag1 = tail(last_vals, 1),
+      roll7 = mean(tail(last_vals, 7)),
+      month = month(nd),
+      weekday = factor(weekday_levels[wday(nd)], levels = weekday_levels, ordered = TRUE)
     )
-    p          <- as.numeric(predict(rf_model, newdata = row))
-    row$pred   <- p
-    out[[i]]   <- row
-    last_vals  <- c(last_vals, p)
+    p <- as.numeric(predict(rf_model, newdata = row))
+    row$pred <- p
+    out[[i]] <- row
+    last_vals <- c(last_vals, p)
   }
-  bind_rows(out) |> mutate(city = as.character(city))
+  bind_rows(out)
 }
 
-# ---- Custom CSS -----------------------------------------------
-website_css <- "
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+# ---- Theme -------------------------------------------------------
+clean_theme <- function() {
+  theme_minimal(base_size = 15) +
+    theme(
+      text = element_text(colour = ink),
+      plot.title = element_text(face = "bold", size = 18, colour = ink),
+      plot.subtitle = element_text(size = 14, colour = muted),
+      plot.caption = element_text(size = 11, colour = muted),
+      axis.text = element_text(size = 13, colour = muted),
+      axis.title = element_text(size = 14, colour = ink),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(colour = "#E4E7EB"),
+      legend.position = "top",
+      legend.text = element_text(size = 13)
+    )
+}
 
-html, body { background: #0d0d1a !important; color: #e2e8f0 !important;
-  font-family: 'Inter', sans-serif !important; }
-
-.navbar { background: rgba(13,13,26,0.97) !important;
-  border-bottom: 1px solid rgba(0,212,255,0.15) !important;
-  padding: 0.6rem 2rem !important; }
-.navbar .nav-link { color: #94a3b8 !important; font-weight: 500 !important; border-radius: 8px; }
-.navbar .nav-link:hover { color: #e2e8f0 !important; background: rgba(255,255,255,0.07) !important; }
-.navbar .nav-link.active { color: #00d4ff !important; background: rgba(0,212,255,0.1) !important; }
-
-.bslib-sidebar-layout > .sidebar { background: #0f0f24 !important;
-  border-right: 1px solid rgba(0,212,255,0.1) !important; }
-
-.bslib-value-box { border: 1px solid rgba(0,212,255,0.2) !important; border-radius: 16px !important;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4) !important; }
-.bslib-value-box .value-box-value { font-family: 'Space Grotesk', sans-serif !important;
-  font-size: 2rem !important; font-weight: 700 !important; }
-
-.card { background: #13132a !important; border: 1px solid rgba(255,255,255,0.07) !important;
-  border-radius: 16px !important; box-shadow: 0 4px 24px rgba(0,0,0,0.35) !important; overflow: hidden; }
-.card-header { background: rgba(0,212,255,0.04) !important;
-  border-bottom: 1px solid rgba(0,212,255,0.1) !important;
-  font-family: 'Space Grotesk', sans-serif !important; font-weight: 600 !important; color: #e2e8f0 !important; }
-
-.about-hero { background: linear-gradient(135deg, #0f0f28 0%, #1a1040 50%, #0f0f28 100%);
-  border: 1px solid rgba(0,212,255,0.15); border-radius: 20px; padding: 3rem 2.5rem; margin-bottom: 1.5rem; }
-.about-hero h3 { font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 700; color: #f1f5f9; }
-.about-hero p { color: #94a3b8; font-size: 1rem; line-height: 1.7; max-width: 640px; }
-.feature-pill { display: inline-block; background: rgba(0,212,255,0.1);
-  border: 1px solid rgba(0,212,255,0.25); color: #00d4ff; border-radius: 99px;
-  padding: 0.35rem 1rem; font-size: 0.8rem; font-weight: 600; margin: 0.25rem; }
+# ---- CSS ---------------------------------------------------------
+site_css <- "
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+body { background: #FAFAF7; color: #1F2933; font-family: 'Inter', sans-serif; font-size: 16px; }
+.navbar { background: #FFFFFF !important; border-bottom: 1px solid #E4E7EB; }
+.navbar-brand, .nav-link { font-size: 16px !important; }
+.nav-link.active { font-weight: 600; color: #1F2933 !important; }
+.hero h1 { font-size: 2.6rem; font-weight: 700; letter-spacing: -0.5px; margin-bottom: .3rem; }
+.hero p { font-size: 1.1rem; color: #5B6770; max-width: 760px; }
+.card { background: #FFFFFF; border: 1px solid #E4E7EB; border-radius: 10px; overflow: visible !important; }
+.card-body { overflow: visible !important; }
+.card-header { background: #FFFFFF; font-weight: 600; font-size: 1.05rem; border-bottom: 1px solid #E4E7EB; }
+.kpi-card { padding: 1.1rem 1.4rem; min-height: 120px; display: flex; flex-direction: column; justify-content: center; overflow: visible !important; }
+.kpi-label { font-size: .8rem; color: #5B6770; text-transform: uppercase; letter-spacing: .6px; margin-bottom: .4rem; }
+.kpi-value { font-size: 1.9rem; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: visible; }
+.caption { font-size: .95rem; color: #5B6770; margin-top: .5rem; }
 "
 
-# ---- UI -------------------------------------------------------
+# ---- UI ----------------------------------------------------------
 ui <- page_navbar(
-  title = tagList(
-    bs_icon("wind"),
-    tags$span(" PM2.5", style = "color:#00d4ff; font-weight:700;"),
-    tags$span(" Forecast Studio", style = "font-weight:400; opacity:0.85;")
-  ),
+  title = tagList(bs_icon("cloud-haze2"), " PM2.5 Explorer"),
   id = "nav",
-  theme = bs_theme(
-    version      = 5,
-    bootswatch   = "darkly",
-    primary      = accent,
-    base_font    = font_google("Inter"),
-    heading_font = font_google("Space Grotesk"),
-    bg           = "#0d0d1a",
-    fg           = txt
-  ),
-  header = tags$head(tags$style(HTML(website_css))),
-  
+  theme = bs_theme(version = 5, base_font = font_google("Inter"),
+                   primary = "#2E86AB", bg = paper, fg = ink),
+  header = tags$head(tags$style(HTML(site_css))),
   sidebar = sidebar(
-    width = 280,
-    open  = "open",
-    tags$small(style = "color:#64748b; text-transform:uppercase; letter-spacing:1px; font-weight:600;",
-               bs_icon("geo-alt-fill"), " City"),
-    selectInput("city", NULL, choices = city_list, selected = city_list[1]),
-    tags$hr(),
-    conditionalPanel(
-      "input.nav == 'Forecast'",
-      tags$small(style = "color:#64748b; text-transform:uppercase; letter-spacing:1px; font-weight:600;",
-                 bs_icon("sliders"), " Forecast Mode"),
-      radioButtons("mode", NULL,
-                   choices = c("Test-period check" = "test",
-                               "Specific date"     = "date",
-                               "Next 7 days"       = "week")),
-      conditionalPanel(
-        "input.mode == 'date'",
-        dateInput("target", "Target date", value = last_obs + 1, min = last_obs + 1)
-      ),
-      conditionalPanel(
-        "input.mode == 'test'",
-        dateRangeInput("dates", "Date range",
-                       start = min(test$date), end = max(test$date),
-                       min   = min(test$date), max = max(test$date))
-      )
+    width = 260,
+    selectInput("city", "City", choices = city_list, selected = "Delhi"),
+    conditionalPanel("input.nav == 'Forecast'",
+                     radioButtons("mode", "Forecast mode",
+                                  choices = c("Test period" = "test",
+                                              "Specific date" = "date",
+                                              "Next 7 days" = "week")),
+                     conditionalPanel("input.mode == 'date'",
+                                      dateInput("target", "Target date", value = last_obs + 1, min = last_obs + 1)),
+                     conditionalPanel("input.mode == 'test'",
+                                      dateRangeInput("dates", "Date range", start = min(test$date), end = max(test$date)))
     ),
-    conditionalPanel(
-      "input.nav == 'Compare Cities'",
-      tags$small(style = "color:#64748b; text-transform:uppercase; letter-spacing:1px; font-weight:600;",
-                 bs_icon("check2-square"), " Cities to Compare"),
-      checkboxGroupInput("compare_cities", NULL,
-                         choices = city_list, selected = city_list)
-    )
+    conditionalPanel("input.nav == 'Compare'",
+                     checkboxGroupInput("cities", "Cities", choices = city_list, selected = city_list))
   ),
   
-  nav_panel(
-    title = "Forecast", value = "Forecast",
-    tags$div(style = "padding: 1.5rem 2rem;",
-             layout_column_wrap(
-               width = 1/3, gap = "1.25rem",
-               value_box(title = "Model Test RMSE", value = uiOutput("rmse"),
-                         theme = "primary", showcase = bs_icon("activity")),
-               value_box(title = "Latest Observed", value = uiOutput("latest"),
-                         theme = "info", showcase = bs_icon("wind")),
-               value_box(title = "Forecast", value = uiOutput("forecast_val"),
-                         theme = "success", showcase = bs_icon("stars"))
-             ),
-             tags$div(style = "height:1.5rem;"),
-             card(full_screen = TRUE,
-                  card_header("Forecast / Test Comparison"),
-                  plotOutput("main_plot", height = "420px")),
-             tags$div(style = "height:1.25rem;"),
-             card(card_header("Historical PM2.5: Last 180 Days"),
-                  plotOutput("history_plot", height = "220px"))
-    )
+  nav_panel("Forecast", value = "Forecast",
+            div(class = "hero", h1("Next-day PM2.5, explained"),
+                p("Hover any line to read the exact value. The forecast band shows typical error.")),
+            layout_column_wrap(width = 1/3,
+                               div(class = "card kpi-card", div(class = "kpi-label", "Model test RMSE"),
+                                   div(class = "kpi-value", textOutput("kpi_rmse"))),
+                               div(class = "card kpi-card", div(class = "kpi-label", "Latest observed"),
+                                   div(class = "kpi-value", textOutput("kpi_latest"))),
+                               div(class = "card kpi-card", div(class = "kpi-label", "Forecast"),
+                                   div(class = "kpi-value", textOutput("kpi_forecast")))
+            ),
+            card(card_header("Actual vs forecast"),
+                 plotlyOutput("main_plot", height = "440px"),
+                 p(class = "caption", "Source: Open-Meteo Air Quality API. Hover for daily values.")),
+            card(card_header("Last 180 days"),
+                 plotlyOutput("history_plot", height = "300px"))
   ),
   
-  nav_panel(
-    title = "Compare Cities", value = "Compare Cities",
-    tags$div(style = "padding: 1.5rem 2rem;",
-             card(card_header("Daily PM2.5 by City"),
-                  plotOutput("compare_plot", height = "420px")),
-             tags$div(style = "height:1.25rem;"),
-             card(card_header("Monthly PM2.5 Distribution by City"),
-                  plotOutput("box_plot", height = "420px"))
-    )
+  nav_panel("Compare", value = "Compare",
+            card(card_header("Daily PM2.5 by city"),
+                 plotlyOutput("compare_plot", height = "460px")),
+            card(card_header("Stacked monthly average (share of total)"),
+                 plotlyOutput("share_plot", height = "400px")),
+            card(card_header("Monthly spread by city"),
+                 plotlyOutput("box_plot", height = "420px"))
   ),
   
-  nav_panel(
-    title = "Patterns", value = "Patterns",
-    tags$div(style = "padding: 1.5rem 2rem;",
-             layout_column_wrap(
-               width = 1/2, gap = "1.25rem",
-               card(card_header("Average PM2.5 by Weekday"),
-                    plotOutput("weekday_plot", height = "360px")),
-               card(card_header("Forecast Error Distribution (Test Set)"),
-                    plotOutput("error_plot", height = "360px"))
-             )
-    )
+  nav_panel("Patterns", value = "Patterns",
+            card(card_header("Average PM2.5 by weekday"),
+                 plotlyOutput("weekday_plot", height = "380px")),
+            card(card_header("Forecast error distribution (test set)"),
+                 plotlyOutput("error_plot", height = "380px"))
   ),
   
-  nav_panel(
-    title = "About", value = "About",
-    tags$div(style = "padding: 1.5rem 2rem;",
-             tags$div(class = "about-hero",
-                      tags$h3("PM2.5 Forecast Studio"),
-                      tags$p("A machine-learning dashboard that forecasts next-day PM2.5 air quality
-                across five Indian cities, using a Random Forest model trained on
-                Open-Meteo Air Quality data."),
-                      tags$div(style = "margin-top:1.5rem;",
-                               tags$span(class = "feature-pill", "Random Forest"),
-                               tags$span(class = "feature-pill", "Lag-1 and 7-day rolling features"),
-                               tags$span(class = "feature-pill", "5 Indian cities"),
-                               tags$span(class = "feature-pill", "Open-Meteo API")
-                      )
-             ),
-             layout_column_wrap(
-               width = 1/2, gap = "1.25rem",
-               card(card_header("How It Works"),
-                    tags$p(style = "color:#94a3b8; line-height:1.8; padding:1rem 1.5rem;",
-                           "The model uses yesterday's PM2.5 (lag-1) and the 7-day rolling mean as inputs,
-                plus month and weekday for seasonality. Multi-day forecasts are generated
-                recursively, so each day's prediction becomes the next day's lag-1 input.")),
-               card(card_header("Accuracy and Caveats"),
-                    tags$p(style = "color:#94a3b8; line-height:1.8; padding:1rem 1.5rem;",
-                           "Test RMSE is computed on the last 90 days, held out from training.
-                Forecasts beyond about 3 days accumulate error, so treat them as indicative trends.")))
-    )
+  nav_panel("About", value = "About",
+            card(div(class = "hero", h1("About this project"),
+                     p("A random forest model forecasts next-day PM2.5 for five Indian cities using lag-1 and 7-day rolling features. Forecasts further ahead accumulate error, so treat them as indicative.")))
   )
 )
 
-# ---- Server ---------------------------------------------------
+# ---- Server ------------------------------------------------------
 server <- function(input, output, session) {
   
-  output$rmse <- renderUI({
-    d <- test |> filter(city == input$city)
-    if (nrow(d) == 0) return("No data")
+  test_city <- reactive(test |> filter(city == input$city))
+  
+  output$kpi_rmse <- renderText({
+    d <- test_city(); if (nrow(d) == 0) return("No data")
     paste(round(sqrt(mean((d$pred - d$pm25)^2, na.rm = TRUE)), 1), "µg/m³")
   })
-  
-  output$latest <- renderUI({
-    v <- pm25_model |> filter(city == input$city) |> arrange(date) |> tail(1)
+  output$kpi_latest <- renderText({
+    v <- pm25_model |> filter(city == input$city) |> tail(1)
     paste(round(v$pm25, 1), "µg/m³")
   })
-  
-  forecast_data <- reactive({
-    n <- switch(input$mode,
-                week = 7,
-                date = as.integer(input$target - last_obs),
-                test = 0)
-    if (is.na(n) || n <= 0) return(NULL)
-    forecast_city(input$city, n)
-  })
-  
-  output$forecast_val <- renderUI({
+  output$kpi_forecast <- renderText({
     if (input$mode == "test") return("See chart")
-    f <- forecast_data()
-    if (is.null(f)) return("—")
+    n <- if (input$mode == "week") 7 else as.integer(input$target - last_obs)
+    f <- forecast_city(input$city, n)
     if (input$mode == "date") paste(round(tail(f$pred, 1), 1), "µg/m³")
     else paste(round(mean(f$pred), 1), "µg/m³ avg")
   })
   
-  output$main_plot <- renderPlot({
+  output$main_plot <- renderPlotly({
     if (input$mode == "test") {
-      d <- test |>
-        filter(city == input$city,
-               date >= input$dates[1], date <= input$dates[2]) |>
+      d <- test_city() |>
+        filter(date >= input$dates[1], date <= input$dates[2]) |>
         pivot_longer(c(pm25, pred), names_to = "type", values_to = "value") |>
         mutate(type = ifelse(type == "pm25", "Actual", "Predicted"))
       validate(need(nrow(d) > 0, "No test data in this range."))
-      
-      ggplot(d, aes(date, value, colour = type)) +
-        geom_line(linewidth = 1.2) +
-        scale_colour_manual(values = c(Actual = accent, Predicted = accent2)) +
-        labs(title = paste("Actual vs Predicted PM2.5:", input$city),
-             subtitle = "Test period",
-             x = "Date", y = "PM2.5 (µg/m³)", colour = NULL,
-             caption = "Source: Open-Meteo Air Quality API") +
-        dark_plot() + theme(legend.position = "top")
-      
+      plot_ly(d, x = ~date, y = ~value, color = ~type,
+              colors = c(Actual = "#1F2933", Predicted = "#E4572E"),
+              type = "scatter", mode = "lines", hoverinfo = "text",
+              text = ~paste0(format(date, "%d %b %Y"), "<br>", type, ": ",
+                             round(value, 1), " µg/m³")) |>
+        layout(xaxis = list(title = ""),
+               yaxis = list(title = "PM2.5 (µg/m³)"),
+               font = list(family = "Inter", size = 14),
+               legend = list(orientation = "h", y = -0.15))
     } else {
-      f <- forecast_data()
-      validate(need(!is.null(f), "Pick a valid date after the last observation."))
-      hist_tail <- pm25_model |> filter(city == input$city) |> arrange(date) |> tail(30)
+      n <- if (input$mode == "week") 7 else as.integer(input$target - last_obs)
+      f <- forecast_city(input$city, n)
+      hist <- pm25_model |> filter(city == input$city) |> arrange(date) |> tail(30)
+      f <- f |> mutate(lo = pred - test_rmse, hi = pred + test_rmse)
       
-      ggplot() +
-        geom_line(data = hist_tail, aes(date, pm25), colour = accent, linewidth = 1.2) +
-        geom_ribbon(data = f,
-                    aes(date, ymin = pred - test_rmse, ymax = pred + test_rmse),
-                    fill = accent2, alpha = 0.2) +
-        geom_line(data = f, aes(date, pred), colour = accent2, linewidth = 1.3) +
-        geom_point(data = f, aes(date, pred), colour = accent2, size = 3) +
-        labs(title = paste("Forecast for", input$city),
-             subtitle = "Cyan: last 30 observed days · Pink: forecast ± RMSE band",
-             x = "Date", y = "PM2.5 (µg/m³)",
-             caption = "Source: Open-Meteo Air Quality API") +
-        dark_plot()
+      plot_ly() |>
+        add_trace(data = hist, x = ~date, y = ~pm25, type = "scatter", mode = "lines",
+                  name = "Observed", line = list(color = "#1F2933", width = 2),
+                  hoverinfo = "text",
+                  text = ~paste0(format(date, "%d %b %Y"), "<br>Observed: ",
+                                 round(pm25, 1), " µg/m³")) |>
+        add_ribbons(data = f, x = ~date, ymin = ~lo, ymax = ~hi, name = "Typical error",
+                    fillcolor = "rgba(228,87,46,0.15)", line = list(color = "transparent"),
+                    hoverinfo = "skip") |>
+        add_trace(data = f, x = ~date, y = ~pred, type = "scatter", mode = "lines+markers",
+                  name = "Forecast", line = list(color = "#E4572E", width = 2),
+                  marker = list(color = "#E4572E", size = 7), hoverinfo = "text",
+                  text = ~paste0(format(date, "%d %b %Y"), "<br>Forecast: ",
+                                 round(pred, 1), " µg/m³")) |>
+        layout(xaxis = list(title = ""),
+               yaxis = list(title = "PM2.5 (µg/m³)"),
+               font = list(family = "Inter", size = 14),
+               legend = list(orientation = "h", y = -0.15))
     }
   })
   
-  output$history_plot <- renderPlot({
+  output$history_plot <- renderPlotly({
     d <- pm25_model |> filter(city == input$city) |> arrange(date) |> tail(180)
-    ggplot(d, aes(date, pm25)) +
-      geom_area(fill = accent, alpha = 0.15) +
-      geom_line(colour = accent, linewidth = 0.8) +
-      labs(x = "Date", y = "PM2.5 (µg/m³)") +
-      dark_plot()
+    plot_ly(d, x = ~date, y = ~pm25, type = "scatter", mode = "lines",
+            fill = "tozeroy", line = list(color = "#2E86AB", width = 1.5),
+            fillcolor = "rgba(46,134,171,0.2)", hoverinfo = "text",
+            text = ~paste0(format(date, "%d %b %Y"), "<br>", round(pm25, 1), " µg/m³")) |>
+      layout(xaxis = list(title = ""),
+             yaxis = list(title = "PM2.5 (µg/m³)"),
+             font = list(family = "Inter", size = 14))
   })
   
-  output$compare_plot <- renderPlot({
-    d <- pm25_model |> filter(city %in% input$compare_cities)
+  output$compare_plot <- renderPlotly({
+    d <- pm25_model |> filter(city %in% input$cities)
     validate(need(nrow(d) > 0, "Select at least one city."))
-    ggplot(d, aes(date, pm25, colour = city)) +
-      geom_line(linewidth = 0.5, alpha = 0.9) +
-      labs(x = "Date", y = "PM2.5 (µg/m³)", colour = "City",
-           caption = "Source: Open-Meteo Air Quality API") +
-      dark_plot() + theme(legend.position = "top")
+    plot_ly(d, x = ~date, y = ~pm25, color = ~city, colors = pal,
+            type = "scatter", mode = "lines",
+            hoverinfo = "text",
+            text = ~paste0(city, "<br>", format(date, "%d %b %Y"), "<br>",
+                           round(pm25, 1), " µg/m³")) |>
+      layout(xaxis = list(title = ""),
+             yaxis = list(title = "PM2.5 (µg/m³)"),
+             font = list(family = "Inter", size = 14),
+             legend = list(orientation = "h", y = -0.15))
   })
   
-  output$box_plot <- renderPlot({
-    d <- pm25_model |>
-      filter(city %in% input$compare_cities) |>
-      mutate(month_lab = factor(month.abb[month(date)], levels = month.abb))
+  output$share_plot <- renderPlotly({
+    d <- pm25_model |> filter(city %in% input$cities) |>
+      mutate(ym = floor_date(date, "month")) |>
+      group_by(ym, city) |>
+      summarise(avg = mean(pm25), .groups = "drop")
     validate(need(nrow(d) > 0, "Select at least one city."))
-    ggplot(d, aes(month_lab, pm25, fill = city)) +
-      geom_boxplot(outlier.alpha = 0.3) +
-      labs(x = "Month", y = "PM2.5 (µg/m³)", fill = "City",
-           caption = "Source: Open-Meteo Air Quality API") +
-      dark_plot() + theme(legend.position = "top")
+    plot_ly(d, x = ~ym, y = ~avg, color = ~city, colors = pal,
+            type = "scatter", mode = "lines", stackgroup = "one",
+            hoverinfo = "text",
+            text = ~paste0(city, "<br>", format(ym, "%b %Y"), "<br>",
+                           round(avg, 1), " µg/m³")) |>
+      layout(xaxis = list(title = ""),
+             yaxis = list(title = "Monthly mean PM2.5 (µg/m³)"),
+             font = list(family = "Inter", size = 14),
+             legend = list(orientation = "h", y = -0.15))
   })
   
-  output$weekday_plot <- renderPlot({
-    d <- pm25_model |>
-      filter(city == input$city) |>
-      mutate(wd = factor(weekday_levels[wday(date)], levels = weekday_levels))
-    validate(need(nrow(d) > 0, "No data for this city."))
-    d |>
-      group_by(wd) |>
-      summarise(avg = mean(pm25, na.rm = TRUE), .groups = "drop") |>
-      ggplot(aes(wd, avg)) +
-      geom_col(fill = accent, alpha = 0.9, width = 0.7) +
-      labs(title = paste("Average PM2.5 by Weekday:", input$city),
-           x = NULL, y = "Mean PM2.5 (µg/m³)",
-           caption = "Source: Open-Meteo Air Quality API") +
-      dark_plot()
+  output$box_plot <- renderPlotly({
+    d <- pm25_model |> filter(city %in% input$cities) |>
+      mutate(m = factor(month.abb[month(date)], levels = month.abb))
+    p <- ggplot(d, aes(m, pm25, fill = city)) +
+      geom_boxplot(outlier.size = 0.8, linewidth = 0.3) +
+      scale_fill_manual(values = pal) +
+      labs(x = NULL, y = "PM2.5 (µg/m³)", fill = NULL) + clean_theme()
+    ggplotly(p)
   })
   
-  output$error_plot <- renderPlot({
+  output$weekday_plot <- renderPlotly({
+    d <- pm25_model |> filter(city == input$city) |>
+      mutate(wd = factor(weekday_levels[wday(date)], levels = weekday_levels)) |>
+      group_by(wd) |> summarise(avg = mean(pm25), .groups = "drop")
+    p <- ggplot(d, aes(wd, avg, text = paste0(wd, ": ", round(avg, 1), " µg/m³"))) +
+      geom_col(fill = "#2E86AB", width = 0.7) +
+      labs(x = NULL, y = "Mean PM2.5 (µg/m³)") + clean_theme()
+    ggplotly(p, tooltip = "text")
+  })
+  
+  output$error_plot <- renderPlotly({
     d <- test |> mutate(err = pred - pm25)
-    ggplot(d, aes(err)) +
-      geom_histogram(bins = 35, fill = accent2, alpha = 0.85) +
-      geom_vline(xintercept = 0, linetype = "dashed", colour = txt) +
-      labs(title = "Forecast Error Distribution",
-           subtitle = "Predicted minus actual · All cities · Test period",
-           x = "Error (µg/m³)", y = "Count") +
-      dark_plot()
+    p <- ggplot(d, aes(err)) +
+      geom_histogram(bins = 35, fill = "#E4572E", alpha = 0.85) +
+      geom_vline(xintercept = 0, linetype = "dashed", colour = ink) +
+      labs(x = "Error, predicted minus actual (µg/m³)", y = "Count") + clean_theme()
+    ggplotly(p)
   })
 }
 
